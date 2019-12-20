@@ -1,6 +1,24 @@
 -record(healthmon_state, {
-    process_tree = undefined
+    appmon,
+    comp_graph
 }).
+
+%% For processes, the component key is the process id in string
+%% For applications, it is the pid of the application master
+%% TODO: Add fields - node so that {comp_name, node} can be classified as unique 
+-record(component, {
+    comp_key,
+    comp_name,
+    app_name,
+    node,
+    type                      :: comp_type(),
+    health = good             :: comp_health(),
+    metadata = #{}            :: map()
+}).
+
+
+-type comp_type()             :: node | app | process | system.
+-type comp_health()           :: unknown | good | bad | dead.
 
 -type event_type()            :: gen_statem:event_type() | enter_specific.
 -type event_name()            :: atom().
