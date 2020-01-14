@@ -442,17 +442,17 @@ to_pid(Pid) when is_pid(Pid) ->
 to_pid(Pid) when is_list(Pid) ->
     list_to_pid(Pid).
 
-% get_component_information(CompRecs) ->
-%     {ok, CompGraph} = get_comp_graph(),
-%     SubGraph = digraph:new(),
-%     lists:foreach(
-%         fun(Comp) ->
-%             CompKey = Comp#component.comp_key,
-%             add_ancestry_to_graph(CompKey, SubGraph, CompGraph)
-%         end,
-%     CompRecs),
-%     Tree = get_component_tree_map(SubGraph),
-%     _AllVerts = digraph:vertices(SubGraph).
+get_component_information(CompRecs) ->
+    {ok, CompGraph} = get_comp_graph(),
+    SubGraph = digraph:new(),
+    lists:foreach(
+        fun(Comp) ->
+            CompKey = Comp#component.comp_key,
+            add_ancestry_to_graph(CompKey, SubGraph, CompGraph)
+        end,
+    CompRecs),
+    Tree = get_component_tree_map(SubGraph),
+    _AllVerts = digraph:vertices(SubGraph).
     % Comps =
     %     lists:map(
     %         fun() ->
