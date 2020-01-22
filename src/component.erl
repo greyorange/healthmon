@@ -5,13 +5,15 @@
 -include("include/healthmon.hrl").
 
 recordslist_to_json(RecordsList) ->
-    RecListJsonableTerm = lists:map(
+    jsx:encode(recordslist_to_jsonable_term(RecordsList)).
+
+recordslist_to_jsonable_term(RecordsList) ->
+    lists:map(
         fun(Record) ->
             {serialize(Record#?MODULE.comp_key),
                 to_jsonable_term(Record)}
         end,
-        RecordsList),
-    jsx:encode(RecListJsonableTerm).
+        RecordsList).
 
 to_json(Comp) ->
     jsx:encode(to_jsonable_term(Comp)).

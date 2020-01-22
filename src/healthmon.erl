@@ -19,6 +19,7 @@
 %% TODO: Include lager for better logging
 
 -define (MAX_REGISTERED_EXITED_PIDS, 1000).
+-define (MAX_UNREGISTERED_EXITED_PIDS, 1000).
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -269,53 +270,64 @@ update_comp_graph(OrdDict, N2P, CompGraph, AppName) ->
                     digraph:add_vertex(CompGraph, ChildPid),
                     add_edge_if_not_exists(CompGraph, ParentPid, ChildPid),
                     CompName = get_global_name(Child),
-                    
-
-                    UpdatedComp =
-                        case mnesia:dirty_select(component,
-                                [{#component{
-                                    comp_name = CompName,
-                                        app_name = AppName,
-                                        _='_'}, [], ['$_']}]) of
-                            [] ->
-                                #component{
-                                    comp_key = ChildPid,
-                                    comp_name = CompName,
+                    case mnesia:dirty_select(component,
+                            [{#component{
+                                comp_name = CompName,
                                     app_name = AppName,
-                                    type = process
-                                };
-                            Res -> 
-                                ExistingComp = (hd(Res)),
-                                OldPid = ExistingComp#component.comp_key,
-                                case OldPid of
-                                    ChildPid ->
-                                        ExistingComp#component{
-                                            health = good
-                                        }; %% maybe update comp_info here
-                                    _ ->
-                                        %% pid has changed
-                                        %% maybe process was restarted
-                                        lists:foreach(
-                                            fun(Vertex) ->
-                                                add_edge_if_not_exists(CompGraph, ChildPid, Vertex)
-                                            end,
-                                            digraph:out_neighbours(CompGraph, OldPid)
-                                        ),
-                                        lists:foreach(
-                                            fun(Vertex) ->
-                                                add_edge_if_not_exists(CompGraph, Vertex, ChildPid)
-                                            end,
-                                            digraph:in_neighbours(CompGraph, OldPid)
-                                        ),
-                                        digraph:del_vertex(CompGraph, OldPid),
-                                        ExistingComp#component{
-                                            comp_key = ChildPid,
-                                            health = good
-                                        }
-                                end                           
-                        end,
-                    mnesia:transaction(fun() ->
-                        mnesia:write(UpdatedComp) end)
+                                    _='_'}, [], ['$_']}]) of
+                        [] ->
+                            Comp = #component{
+                                comp_key = ChildPid,
+                                comp_name = CompName,
+                                app_name = AppName,
+                                type = process
+                            },
+                            mnesia:transaction(fun() ->
+                                mnesia:write(Comp) end);
+                        [ExistingComp] -> 
+                            OldPid = ExistingComp#component.comp_key,
+                            case OldPid of
+                                ChildPid ->
+                                    UpdatedComp = ExistingComp#component{
+                                        health = good
+                                    }, %% maybe update comp_info here
+                                    mnesia:transaction(fun() ->
+                                        mnesia:write(UpdatedComp) end);
+                                _ ->
+                                    %% pid has changed
+                                    %% maybe process was restarted
+                                    lists:foreach(
+                                        fun(Vertex) ->
+                                            add_edge_if_not_exists(CompGraph, ChildPid, Vertex)
+                                        end,
+                                        digraph:out_neighbours(CompGraph, OldPid)
+                                    ),
+                                    lists:foreach(
+                                        fun(Vertex) ->
+                                            add_edge_if_not_exists(CompGraph, Vertex, ChildPid)
+                                        end,
+                                        digraph:in_neighbours(CompGraph, OldPid)
+                                    ),
+                                    digraph:del_vertex(CompGraph, OldPid),
+                                    UpdatedComp = ExistingComp#component{
+                                        comp_key = ChildPid,
+                                        health = good
+                                    },
+                                    mnesia:transaction(fun() ->
+                                        mnesia:delete({component, OldPid}),
+                                        mnesia:write(UpdatedComp) end)
+                            end;
+                        _ExistingComps ->
+                            %% This is probably the case when same name is used for multiple namespaces
+                            Comp = #component{
+                                comp_key = ChildPid,
+                                comp_name = CompName,
+                                app_name = AppName,
+                                type = process
+                            },
+                            mnesia:transaction(fun() ->
+                                mnesia:write(Comp) end)           
+                    end
                     
                     %% Instead of adding children everytime, check if pids with 
                     %% same registered name exist, if yes then update the same entry both
@@ -345,13 +357,17 @@ update_comp_graph(OrdDict, N2P, CompGraph, AppName) ->
                     end
             end,
         DeadPids),
-    {DeadRegPids, CleanupPids} =
+    {ExitedRegPids, CleanupRegPids} =
         case length(RegPids) > ?MAX_REGISTERED_EXITED_PIDS of
             true ->
-                {PidsToKeep, PidsToClear} =
-                    lists:split(?MAX_REGISTERED_EXITED_PIDS, RegPids),
-                {PidsToKeep, PidsToClear ++ UnregPids};
-            false -> {RegPids, UnregPids}
+                lists:split(?MAX_REGISTERED_EXITED_PIDS, RegPids);
+            false -> {RegPids, []}
+        end,
+    {ExitedUnregPids, CleanupUnregPids} =
+        case length(UnregPids) > ?MAX_UNREGISTERED_EXITED_PIDS of
+            true ->
+                lists:split(?MAX_UNREGISTERED_EXITED_PIDS, UnregPids);
+            false -> {UnregPids, []}
         end,
     lists:foreach(
         fun(Pid) ->
@@ -359,17 +375,19 @@ update_comp_graph(OrdDict, N2P, CompGraph, AppName) ->
                 mnesia:dirty_read(component, Pid),
             UpdatedComp =
                 Comp#component{
-                    health = dead
+                    health = exited
                 },
-            mnesia:dirty_write(UpdatedComp)
+            mnesia:transaction(fun() ->
+                mnesia:write(UpdatedComp) end)
         end,
-    DeadRegPids),
+    ExitedRegPids ++ ExitedUnregPids),
     lists:foreach(
         fun(Pid) ->
-            mnesia:dirty_delete(component, Pid),
+            mnesia:transaction(fun() ->
+                mnesia:delete({component, Pid}) end),
             digraph:del_vertex(CompGraph, Pid)
         end,
-    CleanupPids).
+    CleanupRegPids ++ CleanupUnregPids).
     %% TODO: Remove entries from table (and graph) which are no longer in OrdDict
     %% Leave the registered ones (unless they exceed the specified threshold)
     %% This can be done by first collecting all the pids belonging to that app in table
@@ -451,12 +469,7 @@ get_component_information(CompRecs) ->
             add_ancestry_to_graph(CompKey, SubGraph, CompGraph)
         end,
     CompRecs),
-    Tree = get_component_tree_map(SubGraph),
-    _AllVerts = digraph:vertices(SubGraph).
-    % Comps =
-    %     lists:map(
-    %         fun() ->
-    %             mnesia:dir
+    get_component_tree_map(SubGraph).
 
 add_ancestry_to_graph(K, G, S) ->
     case digraph:vertex(G, K) of
