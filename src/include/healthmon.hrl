@@ -3,15 +3,18 @@
     comp_graph
 }).
 
+-define(COMPONENT_MODEL, component).
+
 %% For processes, the component key is the process id in string
 %% For applications, it is the pid of the application master
 %% TODO: Add fields - node so that {comp_name, node} can be classified as unique 
 -record(component, {
     comp_key,
     comp_name,
+    namespace,
     app_name,
     node,
-    type                      :: comp_type(),
+    type = process            :: comp_type(),
     health = good             :: comp_health(),
     metadata = #{}            :: map()
 }).

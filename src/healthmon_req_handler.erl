@@ -39,14 +39,11 @@ handle(Req, State) ->
                     mnesia:transaction(fun() ->
                         mnesia:select(component,
                             [{#component{_='_'}, [], ['$_']}]) end),
-                Output = #{
-                    tree => healthmon:get_component_information(CompRecs),
-                    details => component:recordslist_to_jsonable_term(CompRecs)
-                },
+                Output = [healthmon:get_component_information(CompRecs)],
                 {jsx:encode(Output), 200};
             _ -> {"NOT FOUND", 404}
         end,
-    Req3 = cowboy_req:reply(Code, #{}, Body, Req),
+    Req3 = cowboy_req:reply(Code, #{<<"content-type">> => <<"application/json">>}, Body, Req),
     {ok, Req3, State}.
 %% @private
 %% @doc returns ok on termination of butler_docs_template_handler
