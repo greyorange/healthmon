@@ -30,15 +30,28 @@ init(Req, Opts) ->
 
 handle(Req, State) ->
     PathInfo = cowboy_req:path_info(Req),
-    % ParsedQs = cowboy_req:parse_qs(Req1)
-    % Type = proplists:get_value(<<"type">>, ParsedQs),
+    ParsedQs = cowboy_req:parse_qs(Req),
+    Health = proplists:get_value(<<"health">>, ParsedQs),
+    AppName = proplists:get_value(<<"app">>, ParsedQs),
     {Body, Code} =
         case PathInfo of
             undefined ->
-                {atomic, CompRecs} =
-                    mnesia:transaction(fun() ->
-                        mnesia:select(component,
-                            [{#component{_='_'}, [], ['$_']}]) end),
+                PossAppName =
+                    case AppName of
+                        undefined -> '_';
+                        AppName -> binary_to_atom(AppName, utf8)
+                    end,
+                MatchSpec =
+                    case Health of
+                        <<"bad">> ->
+                            [{#component{health = stuck, app_name = PossAppName, _='_'}, [], ['$_']},
+                            {#component{health = bad, app_name = PossAppName, _='_'}, [], ['$_']},
+                            {#component{health = crashed, app_name = PossAppName, _='_'}, [], ['$_']},
+                            {#component{health = starving, app_name = PossAppName, _='_'}, [], ['$_']}];
+                        _ ->
+                            [{#component{app_name = PossAppName, _='_'}, [], ['$_']}]
+                    end,    
+                CompRecs = mnesia:dirty_select(component, MatchSpec),
                 Output = [healthmon:get_component_information(CompRecs)],
                 {jsx:encode(Output), 200};
             _ -> {"NOT FOUND", 404}

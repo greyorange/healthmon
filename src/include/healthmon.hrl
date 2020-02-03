@@ -9,14 +9,14 @@
 %% For applications, it is the pid of the application master
 %% TODO: Add fields - node so that {comp_name, node} can be classified as unique 
 -record(component, {
-    comp_key,
-    comp_name,
-    namespace,
+    comp_name                                   :: {term(), term()},
     app_name,
-    node,
-    type = process            :: comp_type(),
-    health = good             :: comp_health(),
-    metadata = #{}            :: map()
+    node = node(),
+    pid,
+    type = process                              :: comp_type(),
+    health = good                               :: comp_health(),
+    metadata = #{}                              :: map(),
+    update_time = calendar:universal_time()     :: calendar:datetime()     
 }).
 
 

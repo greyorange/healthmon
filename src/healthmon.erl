@@ -12,6 +12,8 @@
 
 -include("include/healthmon.hrl").
 
+-import(utils, [get_time_difference/2]).
+
 %% TODO: Right now healthmon supports only one node
 %% But can be easily extended to support multiple nodes
 %% Use appmon pid to find node names properly using a map
@@ -22,8 +24,10 @@
 
 %% TODO: Include lager for better logging
 
--define (MAX_REGISTERED_EXITED_PIDS, 1000).
--define (MAX_UNREGISTERED_EXITED_PIDS, 1000).
+-define (MAX_EXITED_PIDS, 1000).
+-define (MAX_BAD_COMPS, 1000).
+-define (EXITED_CLEANUP_THRESHOLD, 300). % in secs
+
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -37,8 +41,8 @@ start_link() ->
 get_comp_graph() ->
     gen_statem:call({global, ?MODULE}, get_comp_graph).
 
-update_component_attributes(CompKey, Name, AttrValList) ->
-    gen_statem:cast({global, ?MODULE}, {update_component_attributes, CompKey, Name, AttrValList}).
+update_component_attributes(Name, AttrValList) ->
+    gen_statem:cast({global, ?MODULE}, {update_component_attributes, Name, AttrValList, #{}}).
 
 get_component_tree_map() ->
     {ok, CompGraph} = get_comp_graph(),
@@ -46,24 +50,31 @@ get_component_tree_map() ->
 
 get_component_tree_map(CompGraph) ->
     Fun = 
-        fun(Vertex) ->
-            to_binary(Vertex)
+        fun(_Vertex = {Name, _NS}) ->
+            to_binary(Name)
         end,
-    get_comp_map(CompGraph, Fun, system).
+    get_comp_map(CompGraph, Fun, {system, universal}).
 
 get_component_name_map() ->
     {ok, CompGraph} = get_comp_graph(),
     Fun = 
         fun(Vertex) ->
-            case mnesia:dirty_select(component,
-                [{#component{comp_key= Vertex,
-                    comp_name = '$1', _='_'},
-                        [], ['$1']}]) of
+            case mnesia:dirty_read(?COMPONENT_MODEL, Vertex) of
                 [] -> to_binary(Vertex);
-                Res -> to_binary(hd(Res))
+                [Comp] ->
+                    {Name, _Namespace} = Comp#component.comp_name,
+                    to_binary(Name)
             end
         end,
-    get_comp_map(CompGraph, Fun, system).
+    get_comp_map(CompGraph, Fun, {system, universal}).
+
+% register_comp({Name, Namespace}, Options) ->
+    
+
+% heartbeat(CompName) ->
+    
+
+
 %%%===================================================================
 %%% gen_statem callbacks
 %%%==================================================================
@@ -86,16 +97,16 @@ init([]) ->
 handle_event(cast, {initialize}, initializing, StateData) ->
     case mnesia:create_table(component,
         [{ram_copies, [node()]},
-         {index, [comp_name, type, health, namespace]},
+         {index, [type, health, pid]},
          {attributes, record_info(fields, component)}]) of
         {atomic, ok} -> ok;
         {aborted,{already_exists,component}} -> ok
     end,
     {ok, P} = appmon_info:start_link(node(), self(), []),
     CompGraph = digraph:new([acyclic]),
-    digraph:add_vertex(CompGraph, system),
-    digraph:add_vertex(CompGraph, node()),
-    digraph:add_edge(CompGraph, system, node()),
+    digraph:add_vertex(CompGraph, {system, universal}),
+    digraph:add_vertex(CompGraph, {node(), universal}),
+    digraph:add_edge(CompGraph, {system, universal}, {node(), universal}),
     UpdatedState =
         StateData#healthmon_state{
             appmon = P,
@@ -103,52 +114,51 @@ handle_event(cast, {initialize}, initializing, StateData) ->
         },
     SystemComponent =
         #component{
-            comp_key = system,
-            comp_name = system,
+            comp_name = {system, universal},
             type = system
         },
     NodeComponent =
         #component{
-            comp_key = node(),
-            comp_name = atom_to_list(node()),
+            comp_name = {node(), universal},
             type = node
         },
     mnesia:dirty_write(SystemComponent),
     mnesia:dirty_write(NodeComponent),
     appmon_info:app_ctrl(P, node(), true, []),
     {next_state, ready, UpdatedState,
-        [{state_timeout, 10000,
-            {fetch_component_tree}}]};
+        [{state_timeout, 10000, {fetch_component_tree}}]};
 
-handle_event(cast, {update_component_attributes, CompKey, Name, AttrValList}, ready, StateData) ->
-    %% TODO: add to component graph if not exists
+handle_event(cast, {update_component_attributes, Name, AttrValList, Options}, ready, StateData) ->
     CompGraph = StateData#healthmon_state.comp_graph,
     AttrList = record_info(fields, ?COMPONENT_MODEL),
     BaseComp =
-        case mnesia:dirty_read(?COMPONENT_MODEL, CompKey) of
-            [Comp] -> Comp;
-            [] ->
-                Namespace =
-                    case mnesia:dirty_select(component,
-                                [{#component{
-                                    comp_name = Name, _='_'},
-                                        [], ['$_']}]) of
-                        [] ->
-                            add_vertex(CompGraph, system, CompKey),
-                            %% since no component already exists
-                            %% add it to graph as a direct child of system 
-                            global; %% assume global namespace if not found anywhere
-                        Comps ->
-                            C = hd(Comps), %% the name could be from multiple namespaces
-                            %% in this case we are updating an existing comp
-                            %% make sure it is update from graph too
-                            OldKey = C#component.comp_key,
-                            rename_vertex(CompGraph, OldKey, CompKey),
-                            mnesia:dirty_delete(?COMPONENT_MODEL, OldKey),
-                            C#component.namespace
+        case maps:get(namespace, Options, undefined) of
+            undefined ->
+                Res = lists:map(
+                    fun(Namespace) ->
+                        mnesia:dirty_read(?COMPONENT_MODEL, {Name, Namespace})   
                     end,
-                component(CompKey, Name, Namespace)
+                get_standard_namespaces()),
+                FlattenedResults = lists:flatten(Res),
+                case FlattenedResults of
+                    [] -> %% assume global namespace
+                        component({Name, global});
+                    _ ->
+                        hd(FlattenedResults) %% return any existing one
+                end;
+            Namespace ->
+                case mnesia:dirty_read(?COMPONENT_MODEL, {Name, Namespace}) of
+                    [Comp] -> Comp;
+                    [] ->
+                        component({Name, Namespace}) %% TODO: add pid here, get from opts
+                end
         end,
+    CompName = BaseComp#component.comp_name,
+    case digraph:vertex(CompGraph, CompName) of
+        false ->
+            add_vertex(CompGraph, {system, universal}, CompName);
+        _ -> ok
+    end,
     UpdatedComp =
         lists:foldl(
             fun({Col, Value}, Acc) ->
@@ -156,7 +166,7 @@ handle_event(cast, {update_component_attributes, CompKey, Name, AttrValList}, re
             end,
         BaseComp,
         AttrValList),
-    mnesia:dirty_write(UpdatedComp),
+    component:update(UpdatedComp, CompGraph),
     keep_state_and_data;
 
 handle_event(EventType, {fetch_component_tree}, ready, StateData) when
@@ -203,20 +213,15 @@ handle_event(info, {delivery, _, app, AppName, AppData}, _StateName, StateData) 
     CompGraph = StateData#healthmon_state.comp_graph,
     case digraph:vertex(CompGraph, RootPid) of
         false ->
+            RegName = get_registered_name(RootPid),
             %% TODO: see if calling this again adds multiple vertices
-            digraph:add_vertex(CompGraph, RootPid),
+            digraph:add_vertex(CompGraph, RegName),
             %% TODO: If this edge already exists then don't add again
-            OutNbs = digraph:out_neighbours(CompGraph, node()),
-            case lists:member(RootPid, OutNbs) of
-                true -> ok;
-                false ->
-                    digraph:add_edge(CompGraph, node(), RootPid)
-            end,
-            %% TODO: Adjust here node() properly using the appmon pid
+            add_edge_if_not_exists(CompGraph, {node(), universal}, RegName),
             AppComponent =
                 #component{
-                    comp_key = RootPid,
-                    comp_name = atom_to_list(AppName),
+                    pid = RootPid,
+                    comp_name = RegName,
                     app_name = AppName,
                     type = app
                 },
@@ -263,45 +268,27 @@ update_comp_graph(OrdDict, N2P, CompGraph, AppName) ->
                     ParentPid = to_pid(maps:get(Parent, N2P)),
                     ChildPid = to_pid(maps:get(Child, N2P)),
                     %% if parent doesn't exist, then create it
-                    case digraph:vertex(CompGraph, ParentPid) of
-                        false -> digraph:add_vertex(CompGraph, ParentPid);
-                        _ -> ok
-                    end,
-                    
-                    {CompName, Namespace} = get_registered_name(Child),
-                    case mnesia:dirty_select(component,
-                            [{#component{
-                                comp_name = CompName,
-                                namespace = Namespace,
-                                    _='_'}, [], ['$_']}]) of
-                        [] ->
-                            Comp = component(ChildPid, CompName, Namespace, AppName),
-                            add_vertex(CompGraph, ParentPid, ChildPid),
-                            mnesia:dirty_write(Comp);
-                        [ExistingComp] -> 
-                            OldPid = ExistingComp#component.comp_key,
-                            case OldPid of
-                                ChildPid ->
-                                    UpdatedComp = ExistingComp#component{
-                                        health = good
-                                    },
-                                    add_vertex(CompGraph, ParentPid, ChildPid), %% maybe update comp_info here
-                                    mnesia:dirty_write(UpdatedComp);
-                                _ ->
-                                    %% pid has changed
-                                    %% maybe process was restarted
-                                    rename_vertex(CompGraph, OldPid, ChildPid),
-                                    add_edge_if_not_exists(CompGraph, ParentPid, ChildPid),
-                                    UpdatedComp = ExistingComp#component{
-                                        comp_key = ChildPid,
-                                        health = good
-                                    },
-                                    mnesia:dirty_delete({component, OldPid}),
-                                    mnesia:dirty_write(UpdatedComp)
-                            end;
-                        ExistingComps ->
-                            lager:warning("More than one components exist with the same name in same namespace: ~p", [ExistingComps])         
-                    end
+                    ParentName = get_registered_name(Parent),
+                    add_component(CompGraph,
+                        #component{
+                            comp_name = ParentName,
+                            app_name = AppName,
+                            pid = ParentPid
+                        }),
+                    ChildName = get_registered_name(Child),
+                    Comp =
+                        case mnesia:dirty_read(component, ChildName) of
+                            [] ->
+                                add_vertex(CompGraph, ParentName, ChildName),
+                                component(ChildName, AppName);
+                            [ExistingComp] ->
+                                replace_parent(CompGraph, ChildName, ParentName),
+                                ExistingComp#component{
+                                    pid = ChildPid,
+                                    app_name = AppName
+                                }
+                        end,
+                    component:update(Comp, CompGraph)
                     %% Instead of adding children everytime, check if pids with 
                     %% same registered name exist, if yes then update the same entry both
                     %% in table as well as graph 
@@ -310,59 +297,65 @@ update_comp_graph(OrdDict, N2P, CompGraph, AppName) ->
         end,
     OrdDict),
 
-
-    ExistingPids = mnesia:dirty_select(component,
+    %% Cleanup Pids
+    ExistingAppComps = mnesia:dirty_select(component,
                     [{#component{
-                            comp_key = '$1',
                             app_name = AppName,
-                            _='_'}, [], ['$1']}]),
+                            _='_'}, [], ['$_']}]),
+    
     CurrentPids = lists:map(fun to_pid/1, maps:values(N2P)),
-    DeadPids = ExistingPids -- CurrentPids,
-    {RegPids, UnregPids} =
-        lists:partition(
-            fun(Pid) ->
-                [Comp] =
-                    mnesia:dirty_read(component, Pid),
-                    case Comp#component.comp_name of
-                        CompName when is_pid(CompName) ->
-                            false;
-                        _ -> true
+    CurrentPidSet = sets:from_list(CurrentPids),
+    {ExitedComps, CrashedComps} =
+        lists:foldl(
+            fun(Comp, {ExCompsAcc, CrCompsAcc}) ->
+                    case lists:member(Comp#component.health, get_bad_health_states()) of 
+                        true ->
+                            propagate_bad_health(Comp, CompGraph),
+                            {ExCompsAcc, [Comp|CrCompsAcc]};
+                        false ->
+                            case sets:is_element(Comp#component.pid, CurrentPidSet) of
+                                true ->
+                                    %% update component metadata
+                                    ProcessInfoKeys = [current_function, total_heap_size, stack_size, reductions],
+                                    MetaPropList = process_info(Comp#component.pid, ProcessInfoKeys),
+                                    component:patch_metadata(Comp, maps:from_list(MetaPropList)),
+                                    {ExCompsAcc, CrCompsAcc};
+                                false ->
+                                    mnesia:dirty_write(Comp#component{health = exited}),
+                                    {[Comp|ExCompsAcc], CrCompsAcc}
+                            end
                     end
             end,
-        DeadPids),
-    {ExitedRegPids, CleanupRegPids} =
-        case length(RegPids) > ?MAX_REGISTERED_EXITED_PIDS of
+        {[], []},
+        ExistingAppComps),
+    {ExitedCompsRecent, ExCompsStale} =
+        lists:partition(
+            fun component:is_updated_recently/1,
+        ExitedComps),
+    {CrashedCompsRecent, CrCompsStale} =
+        lists:partition(
+            fun component:is_updated_recently/1,
+        CrashedComps),
+        %% TODO: Merge this in above select clause
+    {_Comps, CleanupComps} =
+        case length(ExitedCompsRecent) > ?MAX_EXITED_PIDS of
             true ->
-                lists:split(?MAX_REGISTERED_EXITED_PIDS, RegPids);
-            false -> {RegPids, []}
+                lists:split(?MAX_EXITED_PIDS, ExitedCompsRecent);
+            false -> {ExitedCompsRecent, []}
         end,
-    {ExitedUnregPids, CleanupUnregPids} =
-        case length(UnregPids) > ?MAX_UNREGISTERED_EXITED_PIDS of
+    MaxCrashedComps = application:get_env(healthmon, max_crashed_comps, 5000),
+    {_, CleanupCrComps} = %% sort by updated time here and above as well maybe
+        case length(CrashedCompsRecent) > MaxCrashedComps of
             true ->
-                lists:split(?MAX_UNREGISTERED_EXITED_PIDS, UnregPids);
-            false -> {UnregPids, []}
+                lists:split(MaxCrashedComps, CrashedCompsRecent);
+            false -> {CrashedCompsRecent, []}
         end,
     lists:foreach(
-        fun(Pid) ->
-            [Comp] =
-                mnesia:dirty_read(component, Pid),
-            case Comp#component.health of
-                crashed -> ok; %% do nothing in this case
-                _ ->
-                    UpdatedComp =
-                        Comp#component{
-                            health = exited
-                        },
-                    mnesia:dirty_write(UpdatedComp)
-            end
+        fun(Comp) ->
+            mnesia:dirty_delete({component, Comp#component.comp_name}),
+            digraph:del_vertex(CompGraph, Comp#component.comp_name)
         end,
-    ExitedRegPids ++ ExitedUnregPids),
-    lists:foreach(
-        fun(Pid) ->
-            mnesia:dirty_delete({component, Pid}),
-            digraph:del_vertex(CompGraph, Pid)
-        end,
-    CleanupRegPids ++ CleanupUnregPids).
+    CleanupComps ++ CleanupCrComps ++ ExCompsStale ++ CrCompsStale).
     %% TODO: Remove entries from table (and graph) which are no longer in OrdDict
     %% Leave the registered ones (unless they exceed the specified threshold)
     %% This can be done by first collecting all the pids belonging to that app in table
@@ -392,30 +385,24 @@ get_global_name(Pid) ->
         _ -> {Pid, undefined}
     end.
 
-component(Key) ->
-    {Name, Namespace} = get_registered_name(Key),
+% component(Name) ->
+%     {Name, Namespace} = get_registered_name(Key),
+%     #component{
+%         comp_key = Key,
+%         comp_name = Name,
+%         namespace = Namespace,
+%         node = node()
+%     }.
+
+component(Name) ->
     #component{
-        comp_key = Key,
-        comp_name = Name,
-        namespace = Namespace,
-        node = node()
+        comp_name = Name
     }.
 
-component(Key, Name, Namespace) ->
+component(Name, AppName) ->
     #component{
-        comp_key = Key,
         comp_name = Name,
-        namespace = Namespace,
-        node = node()
-    }.
-
-component(Key, Name, Namespace, AppName) ->
-    #component{
-        comp_key = Key,
-        comp_name = Name,
-        namespace = Namespace,
-        app_name = AppName,
-        node = node()
+        app_name = AppName
     }.
 
 get_crashed_components() ->
@@ -466,9 +453,43 @@ to_binary(Input) ->
             erl_prettypr:best(
                 erl_syntax:abstract(Input)))).
 
+add_component(CompGraph, Comp) ->
+    Name = Comp#component.comp_name,
+    case digraph:vertex(CompGraph, Name) of
+        false -> digraph:add_vertex(CompGraph, Name);
+        _ -> ok
+    end,
+    case mnesia:dirty_read(?COMPONENT_MODEL, Name) of
+        [] -> mnesia:dirty_write(Comp);
+        _ -> ok
+    end.
+
+add_component(CompGraph, ParentCompName, Comp) ->
+    Name = Comp#component.comp_name,
+    add_vertex(CompGraph, ParentCompName, Name),
+    case mnesia:dirty_read(?COMPONENT_MODEL, Name) of
+        [] -> mnesia:dirty_write(Comp);
+        _ -> ok
+    end.
+
 add_vertex(CompGraph, U, V) ->
-    digraph:add_vertex(CompGraph, V),
+    case digraph:vertex(CompGraph, V) of
+        false ->
+            digraph:add_vertex(CompGraph, V);
+        _ -> ok
+    end,
     add_edge_if_not_exists(CompGraph, U, V).
+
+replace_parent(CompGraph, ChildV, ParentV) ->
+    case digraph:vertex(CompGraph, ChildV) of
+        false ->
+            digraph:add_vertex(CompGraph, ChildV),
+            digraph:add_edge(CompGraph, ParentV, ChildV);
+        _ ->
+            Edges = digraph:in_edges(CompGraph, ChildV),
+            digraph:del_edges(CompGraph, Edges)
+    end,
+    digraph:add_edge(CompGraph, ParentV, ChildV).
 
 add_edge_if_not_exists(Graph, U, V) ->
     OutNbs = digraph:out_neighbours(Graph, U),
@@ -499,13 +520,68 @@ to_pid(Pid) when is_pid(Pid) ->
 to_pid(Pid) when is_list(Pid) ->
     list_to_pid(Pid).
 
+propagate_bad_health(Comp, CompGraph) ->
+    CompName = Comp#component.comp_name,
+    case digraph:in_neighbours(CompGraph, CompName) of
+        [] -> ok;
+        Nbs ->
+            lists:foreach(
+                fun(ParV) ->
+                    [ParComp] = mnesia:dirty_read(component, ParV), 
+                    case lists:member(ParComp#component.health,
+                            get_bad_health_states()) of
+                        true -> ok;
+                        false ->
+                            UpdatedComp = ParComp#component{health = bad},
+                            mnesia:dirty_write(UpdatedComp),
+                            propagate_bad_health(ParComp, CompGraph)
+                    end
+                end,
+                Nbs)
+    end.
+
+propagate_good_health(Comp, CompGraph) ->
+    UpdatedComp = Comp#component{health = good},
+    mnesia:dirty_write(UpdatedComp),
+    CompName = Comp#component.comp_name,
+    case digraph:in_neighbours(CompGraph, CompName) of
+        [] -> ok;
+        Nbs ->
+            lists:foreach(
+                fun(ParV) ->
+                    [ParComp] = mnesia:dirty_read(component, ParV), 
+                    case ParComp#component.health of
+                        good -> ok;
+                        _ ->
+                            Siblings = digraph:out_neighbours(CompGraph, ParV),
+                            case lists:all(
+                                fun(Sibling) ->
+                                    [SibComp] = mnesia:dirty_read(component, Sibling),
+                                    SibComp#component.health =:= good
+                                end,
+                            Siblings) of
+                                true ->
+                                    propagate_good_health(ParComp, CompGraph);
+                                false -> ok
+                            end
+                    end
+                end,
+                Nbs)
+    end.
+
+
+get_standard_namespaces() ->
+    [local, global, universal].
+
+get_bad_health_states() ->
+    [bad, crashed, stuck, starving].
+
 get_component_information(CompRecs) ->
     {ok, CompGraph} = get_comp_graph(),
     SubGraph = digraph:new(),
     lists:foreach(
         fun(Comp) ->
-            CompKey = Comp#component.comp_key,
-            add_ancestry_to_graph(CompKey, SubGraph, CompGraph)
+            add_ancestry_to_graph(Comp#component.comp_name, SubGraph, CompGraph)
         end,
     CompRecs),
     get_component_tree_map(SubGraph).
