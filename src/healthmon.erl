@@ -41,8 +41,11 @@ start_link() ->
 get_comp_graph() ->
     gen_statem:call({global, ?MODULE}, get_comp_graph).
 
-update_component_attributes(Name, AttrValList) ->
-    gen_statem:cast({global, ?MODULE}, {update_component_attributes, Name, AttrValList, #{}}).
+% update_component_attributes(Name, AttrValList) ->
+%     gen_statem:cast({global, ?MODULE}, {update_component_attributes, Name, AttrValList, #{}}).
+
+patch_component(Name, AttrValList) ->
+    gen_statem:cast({global, ?MODULE}, {patch_component, Name, AttrValList}).
 
 get_component_tree_map() ->
     {ok, CompGraph} = get_comp_graph(),
@@ -102,6 +105,11 @@ handle_event(cast, {initialize}, initializing, StateData) ->
         {atomic, ok} -> ok;
         {aborted,{already_exists,component}} -> ok
     end,
+    case ets:info(simple_cache_information_query_cache) of
+        undefined ->
+            simple_cache:init(information_query_cache);
+        _ -> ok
+    end,
     {ok, P} = appmon_info:start_link(node(), self(), []),
     CompGraph = digraph:new([acyclic]),
     digraph:add_vertex(CompGraph, {system, universal}),
@@ -115,6 +123,7 @@ handle_event(cast, {initialize}, initializing, StateData) ->
     SystemComponent =
         #component{
             comp_name = {system, universal},
+            node = undefined,
             type = system
         },
     NodeComponent =
@@ -169,17 +178,16 @@ handle_event(cast, {update_component_attributes, Name, AttrValList, Options}, re
     component:update(UpdatedComp, CompGraph),
     keep_state_and_data;
 
+handle_event(cast, {patch_component, Name, AttrValList}, ready, StateData) ->
+    component:patch(Name, AttrValList, StateData#healthmon_state.comp_graph),
+    keep_state_and_data;
+
 handle_event(EventType, {fetch_component_tree}, ready, StateData) when
                 EventType =:= state_timeout;
                 EventType =:= cast ->
     appmon_info:app_ctrl(StateData#healthmon_state.appmon, node(), true, []),
     {keep_state_and_data,  [{state_timeout,
         10000, {fetch_component_tree}}]}; %%TODO: Move this timeout to app delivery
-
-handle_event({call, From}, test, ready, StateData) ->
-    Res = StateData#healthmon_state.comp_graph,
-    {keep_state_and_data,
-        [{reply, From, {ok, Res}}]};
 
 handle_event({call, From}, get_comp_graph, ready, StateData) ->
     {keep_state_and_data,
@@ -316,7 +324,8 @@ update_comp_graph(OrdDict, N2P, CompGraph, AppName) ->
                             case sets:is_element(Comp#component.pid, CurrentPidSet) of
                                 true ->
                                     %% update component metadata
-                                    ProcessInfoKeys = [current_function, total_heap_size, stack_size, reductions],
+                                    ProcessInfoKeys = [message_queue_len, current_function,
+                                        total_heap_size, stack_size, reductions],
                                     MetaPropList = process_info(Comp#component.pid, ProcessInfoKeys),
                                     component:patch_metadata(Comp, maps:from_list(MetaPropList)),
                                     {ExCompsAcc, CrCompsAcc};
@@ -340,14 +349,18 @@ update_comp_graph(OrdDict, N2P, CompGraph, AppName) ->
     {_Comps, CleanupComps} =
         case length(ExitedCompsRecent) > ?MAX_EXITED_PIDS of
             true ->
-                lists:split(?MAX_EXITED_PIDS, ExitedCompsRecent);
+                SortedComps =
+                    component:sort_by_updated_time(ExitedCompsRecent),
+                lists:split(?MAX_EXITED_PIDS, SortedComps);
             false -> {ExitedCompsRecent, []}
         end,
     MaxCrashedComps = application:get_env(healthmon, max_crashed_comps, 5000),
     {_, CleanupCrComps} = %% sort by updated time here and above as well maybe
         case length(CrashedCompsRecent) > MaxCrashedComps of
             true ->
-                lists:split(MaxCrashedComps, CrashedCompsRecent);
+                SortedCrComps =
+                    component:sort_by_updated_time(CrashedCompsRecent),
+                lists:split(MaxCrashedComps, SortedCrComps);
             false -> {CrashedCompsRecent, []}
         end,
     lists:foreach(
@@ -356,7 +369,9 @@ update_comp_graph(OrdDict, N2P, CompGraph, AppName) ->
             digraph:del_vertex(CompGraph, Comp#component.comp_name)
         end,
     CleanupComps ++ CleanupCrComps ++ ExCompsStale ++ CrCompsStale).
-    %% TODO: Remove entries from table (and graph) which are no longer in OrdDict
+    %% TODO: Cleanup entries from table (and graph) which are no longer in OrdDict wisely
+        %% to keep number of components to a bounded limit 
+
     %% Leave the registered ones (unless they exceed the specified threshold)
     %% This can be done by first collecting all the pids belonging to that app in table
     %% inside a set and then from it we can subtract the Pids coming from OrdDict
@@ -384,15 +399,6 @@ get_global_name(Pid) ->
         [{_, Name}] -> {Name, global};
         _ -> {Pid, undefined}
     end.
-
-% component(Name) ->
-%     {Name, Namespace} = get_registered_name(Key),
-%     #component{
-%         comp_key = Key,
-%         comp_name = Name,
-%         namespace = Namespace,
-%         node = node()
-%     }.
 
 component(Name) ->
     #component{

@@ -19,6 +19,17 @@
     update_time = calendar:universal_time()     :: calendar:datetime()     
 }).
 
+-record(crash_entry, {
+    reason = undefined           :: binary() | undefined,  %% reason of crash in tuple form saved in binary format
+    pid = undefined              :: binary() | undefined,  %% crash process pid saved in binary format
+    count = 0                    :: integer(),             %% manage count of same crash
+    registered_name = undefined  :: binary() | undefined,  %% registered name of crashed process saved in binary format
+    time_stamp = undefined       :: calendar:datetime() | undefined, %% calendar universal time
+    last_crash = undefined       :: any(), %% last crash
+    metadata = undefined       :: any(), %% last state while crash
+    last_event = undefined       :: any() %% last event to process
+}).
+
 
 -type comp_type()             :: node | app | process | system.
 -type comp_health()           :: unknown | good | bad | dead.

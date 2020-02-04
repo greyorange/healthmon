@@ -5,7 +5,8 @@
 -include("include/healthmon.hrl").
 
 -import(healthmon, [get_bad_health_states/0,
-    propagate_bad_health/2, propagate_good_health/2]).
+    propagate_bad_health/2, propagate_good_health/2,
+    get_standard_namespaces/0, component/1, add_vertex/3]).
 
 -import(utils, [get_time_difference/2]).
 
@@ -27,20 +28,39 @@ to_jsonable_term(Comp) ->
     Fields = record_info(fields, ?MODULE),
     [_Tag | RawValues] = tuple_to_list(Comp),
     ZippedComp = lists:zip(Fields, RawValues),
+    serialize_proplist(ZippedComp).
+
+serialize_proplist(PList) ->
     lists:foldl(
         fun({Field, Val}, Acc) ->
             case Field of
-                comp_name ->
-                    {Name, Namespace} = Val,
+                metadata when is_map(Val) ->
+                    maps:merge(Acc, serialize_proplist(maps:to_list(Val)));
+                Field when is_map(Val) ->
                     Acc#{
-                            name => serialize(Name),
-                            namespace => serialize(Namespace) %% TODO: Add metadata here automatically
-                        };
+                        Field => serialize_proplist(maps:to_list(Val))
+                    };
+                comp_name ->
+                    case Val of
+                        undefined ->
+                            Acc#{
+                                    name => undefined,
+                                    namespace => undefined %% TODO: Add metadata here automatically
+                                };
+                        {Name, Namespace} ->    
+                            Acc#{
+                                    name => serialize(Name),
+                                    namespace => serialize(Namespace) %% TODO: Add metadata here automatically
+                                }
+                    end;
+                update_time ->
+                    Acc#{Field => Val};
                 _ -> Acc#{Field => serialize(Val)}
             end
         end,
         #{},
-        ZippedComp).
+        PList).
+
 
 serialize(Val) when is_pid(Val) ->
     list_to_binary(pid_to_list(Val));
@@ -69,6 +89,56 @@ update(UpdatedComp, CompGraph) ->
         true -> propagate_bad_health(UpdatedComp, CompGraph);
         false -> propagate_good_health(UpdatedComp, CompGraph)
     end.
+
+patch(Comp, AttrValList, CompGraph) when is_record(Comp, component) ->
+    CompName = Comp#component.comp_name,
+    case digraph:vertex(CompGraph, CompName) of
+        false ->
+            add_vertex(CompGraph, {system, universal}, CompName);
+        _ -> ok
+    end,
+    AttrList = record_info(fields, ?COMPONENT_MODEL),
+    UpdatedComp =
+        lists:foldl(
+            fun({Col, Value}, Acc) ->
+                setelement(db_functions:get_index(Col, AttrList) + 1, Acc, Value)
+            end,
+        Comp,
+        AttrValList),
+    component:update(UpdatedComp, CompGraph);
+
+patch(Name, AttrValList, CompGraph) ->
+    Res = lists:map(
+        fun(Namespace) ->
+            mnesia:dirty_read(?COMPONENT_MODEL, {Name, Namespace})   
+        end,
+    get_standard_namespaces()),
+    FlattenedResults = lists:flatten(Res),
+    BaseComp =
+        case FlattenedResults of
+            [] -> %% assume global namespace
+                component({Name, global});
+            _ ->
+                hd(FlattenedResults) %% return any existing one
+        end,
+    patch(BaseComp, AttrValList, CompGraph).
+
+patch(Name, Namespace, AttrValList, CompGraph) ->
+    BaseComp =
+        case mnesia:dirty_read(?COMPONENT_MODEL, {Name, Namespace}) of
+            [Comp] -> Comp;
+            [] ->
+                component({Name, Namespace}) %% TODO: add pid here, get from opts
+        end,
+    patch(BaseComp, AttrValList, CompGraph).
+
+sort_by_updated_time(Comps) ->
+    lists:sort(
+        fun(CompA, CompB) ->
+            CompA#component.update_time > 
+                CompB#component.update_time
+        end,
+    Comps).
 
 patch_metadata(Comp, Meta) ->
     UpdatedMetaData = maps:merge(Comp#component.metadata, Meta),
