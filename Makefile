@@ -10,4 +10,4 @@ ERLC_OPTS += $(ERLC_NOWARN) +'{parse_transform, lager_transform}'
 TEST_ERLC_OPTS += $(ERLC_NOWARN)
 
 
-include erlang.mk
+include $(if $(ERLANG_MK_FILENAME),$(ERLANG_MK_FILENAME),erlang.mk)

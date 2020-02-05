@@ -19,6 +19,7 @@
 %% Use appmon pid to find node names properly using a map
 
 %% TODO: cleanup crashed components that crashed long time back
+%% do this for all comps periodically 
 %%  i.e. ideally crashes should keep occurring atleast every 30 secs
 %%  for system to have detectable bad health
 
@@ -40,9 +41,6 @@ start_link() ->
 
 get_comp_graph() ->
     gen_statem:call({global, ?MODULE}, get_comp_graph).
-
-% update_component_attributes(Name, AttrValList) ->
-%     gen_statem:cast({global, ?MODULE}, {update_component_attributes, Name, AttrValList, #{}}).
 
 patch_component(Name, AttrValList) ->
     gen_statem:cast({global, ?MODULE}, {patch_component, Name, AttrValList}).
@@ -136,47 +134,6 @@ handle_event(cast, {initialize}, initializing, StateData) ->
     appmon_info:app_ctrl(P, node(), true, []),
     {next_state, ready, UpdatedState,
         [{state_timeout, 10000, {fetch_component_tree}}]};
-
-handle_event(cast, {update_component_attributes, Name, AttrValList, Options}, ready, StateData) ->
-    CompGraph = StateData#healthmon_state.comp_graph,
-    AttrList = record_info(fields, ?COMPONENT_MODEL),
-    BaseComp =
-        case maps:get(namespace, Options, undefined) of
-            undefined ->
-                Res = lists:map(
-                    fun(Namespace) ->
-                        mnesia:dirty_read(?COMPONENT_MODEL, {Name, Namespace})   
-                    end,
-                get_standard_namespaces()),
-                FlattenedResults = lists:flatten(Res),
-                case FlattenedResults of
-                    [] -> %% assume global namespace
-                        component({Name, global});
-                    _ ->
-                        hd(FlattenedResults) %% return any existing one
-                end;
-            Namespace ->
-                case mnesia:dirty_read(?COMPONENT_MODEL, {Name, Namespace}) of
-                    [Comp] -> Comp;
-                    [] ->
-                        component({Name, Namespace}) %% TODO: add pid here, get from opts
-                end
-        end,
-    CompName = BaseComp#component.comp_name,
-    case digraph:vertex(CompGraph, CompName) of
-        false ->
-            add_vertex(CompGraph, {system, universal}, CompName);
-        _ -> ok
-    end,
-    UpdatedComp =
-        lists:foldl(
-            fun({Col, Value}, Acc) ->
-                setelement(db_functions:get_index(Col, AttrList) + 1, Acc, Value)
-            end,
-        BaseComp,
-        AttrValList),
-    component:update(UpdatedComp, CompGraph),
-    keep_state_and_data;
 
 handle_event(cast, {patch_component, Name, AttrValList}, ready, StateData) ->
     component:patch(Name, AttrValList, StateData#healthmon_state.comp_graph),
@@ -326,8 +283,11 @@ update_comp_graph(OrdDict, N2P, CompGraph, AppName) ->
                                     %% update component metadata
                                     ProcessInfoKeys = [message_queue_len, current_function,
                                         total_heap_size, stack_size, reductions],
-                                    MetaPropList = process_info(Comp#component.pid, ProcessInfoKeys),
-                                    component:patch_metadata(Comp, maps:from_list(MetaPropList)),
+                                    case process_info(Comp#component.pid, ProcessInfoKeys) of
+                                        undefined -> ok;
+                                        MetaPropList ->
+                                            component:patch_metadata(Comp, maps:from_list(MetaPropList))
+                                    end,
                                     {ExCompsAcc, CrCompsAcc};
                                 false ->
                                     mnesia:dirty_write(Comp#component{health = exited}),
