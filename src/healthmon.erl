@@ -42,6 +42,9 @@ start_link() ->
 get_comp_graph() ->
     gen_statem:call({global, ?MODULE}, get_comp_graph).
 
+get_node_data() ->
+    gen_statem:call({global, ?MODULE}, get_node_data).
+
 patch_component(Name, AttrValList) ->
     gen_statem:cast({global, ?MODULE}, {patch_component, Name, AttrValList}).
 
@@ -133,7 +136,8 @@ handle_event(cast, {initialize}, initializing, StateData) ->
     mnesia:dirty_write(NodeComponent),
     appmon_info:app_ctrl(P, node(), true, []),
     {next_state, ready, UpdatedState,
-        [{state_timeout, 10000, {fetch_component_tree}}]};
+        [{state_timeout, 10000, {fetch_component_tree}},
+            {state_timeout, 5000, {run_cleanup}}]};
 
 handle_event(cast, {patch_component, Name, AttrValList}, ready, StateData) ->
     component:patch(Name, AttrValList, StateData#healthmon_state.comp_graph),
@@ -146,9 +150,34 @@ handle_event(EventType, {fetch_component_tree}, ready, StateData) when
     {keep_state_and_data,  [{state_timeout,
         10000, {fetch_component_tree}}]}; %%TODO: Move this timeout to app delivery
 
+handle_event(EventType, {run_cleanup}, ready, StateData) when
+                EventType =:= state_timeout;
+                EventType =:= cast ->
+    ProcessComps = mnesia:dirty_select(component,
+                    [{#component{
+                            type = process,
+                            _='_'}, [], ['$_']}]),
+    CompGraph = StateData#healthmon_state.comp_graph,
+    lists:foreach(
+        fun(Comp) ->
+            case component:is_updated_recently(Comp) of
+                true -> ok;
+                false ->
+                    mnesia:dirty_delete({component, Comp#component.comp_name}),
+                    digraph:del_vertex(CompGraph, Comp#component.comp_name)
+            end
+        end,
+    ProcessComps),
+    {keep_state_and_data,  [{state_timeout,
+        5000, {run_cleanup}}]};
+
 handle_event({call, From}, get_comp_graph, ready, StateData) ->
     {keep_state_and_data,
         [{reply, From, {ok, StateData#healthmon_state.comp_graph}}]};
+
+handle_event({call, From}, get_node_data, ready, StateData) ->
+    {keep_state_and_data,
+        [{reply, From, {ok, StateData#healthmon_state.node_data}}]};
 
 handle_event({call, From}, _Message, ready, _StateData) ->
     {keep_state_and_data,
@@ -169,7 +198,7 @@ handle_event(info, {delivery, _, app_ctrl, _Node, NodeData}, _StateName, StateDa
             end
         end,
     NodeData),
-    keep_state_and_data;
+    {keep_state, StateData#healthmon_state{node_data = NodeData}};
 
 handle_event(info, {delivery, _, app, AppName, AppData}, _StateName, StateData) ->
     % io:format("A:~p, ~p", [AppName, is_atom(AppName)]),

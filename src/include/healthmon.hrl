@@ -1,6 +1,7 @@
 -record(healthmon_state, {
     appmon,
-    comp_graph
+    comp_graph,
+    node_data
 }).
 
 -define(COMPONENT_MODEL, component).

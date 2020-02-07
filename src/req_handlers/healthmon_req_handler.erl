@@ -12,6 +12,8 @@
          terminate/3
         ]).
 
+-import(utils, [to_binary/1]).
+
 -include("../include/healthmon.hrl").
 
 trails() ->
@@ -73,19 +75,20 @@ handle(Req, State) ->
             [<<"which_applications">>] ->
                 OutputFun =
                     fun() ->
-                        Apps = application:which_applications(),
+                        {ok, NodeData} = healthmon:get_node_data(),
                         Output = 
                             lists:foldl(
-                                fun({AppName, Description, Vsn}, Acc) ->
-                                    Acc#{AppName => 
+                                fun({AppMasterPid, _, {AppName, Description, Vsn}}, Acc) ->
+                                    Acc#{to_binary(AppName) => 
                                             #{
-                                                description => list_to_binary(Description),
-                                                vsn => list_to_binary(Vsn)
+                                                description => to_binary(Description),
+                                                vsn => to_binary(Vsn),
+                                                master_pid => to_binary(AppMasterPid)
                                             }
                                         }
                                 end,
                                 #{},
-                            Apps),
+                            NodeData),
                         {jsx:encode(Output), 200}
                     end,
                 case simple_cache:get(information_query_cache,
