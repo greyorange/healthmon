@@ -17,7 +17,7 @@
 -include("../include/healthmon.hrl").
 
 trails() ->
-    [trails:trail("/healthmon/[...]", ?MODULE, [])].
+    [trails:trail("/healthmon/api/[...]", ?MODULE, [])].
 
 %% @private
 %% @doc Initializes the butler_mnesia_req_handler
@@ -39,6 +39,7 @@ handle(Req, State) ->
         _ -> ok
     end,
     CacheFlushInterval = application:get_env(healthmon, api_cache_flush_interval, 10000),
+    ServiceUARes = {jsx:encode(<<"Service Unavailable">>), 503},
     {Body, Code} =
         case PathInfo of
             [<<"information">>] ->
@@ -76,25 +77,30 @@ handle(Req, State) ->
                 OutputFun =
                     fun() ->
                         {ok, NodeData} = healthmon:get_node_data(),
-                        Output = 
-                            lists:foldl(
-                                fun({AppMasterPid, _, {AppName, Description, Vsn}}, Acc) ->
-                                    Acc#{to_binary(AppName) => 
-                                            #{
-                                                description => to_binary(Description),
-                                                vsn => to_binary(Vsn),
-                                                master_pid => to_binary(AppMasterPid)
-                                            }
-                                        }
-                                end,
-                                #{},
-                            NodeData),
-                        {jsx:encode(Output), 200}
+                        case NodeData of
+                            undefined -> ServiceUARes;
+                            _ ->
+                                Output = 
+                                    lists:foldl(
+                                        fun({AppMasterPid, _, {AppName, Description, Vsn}}, Acc) ->
+                                            Acc#{to_binary(AppName) => 
+                                                    #{
+                                                        description => to_binary(Description),
+                                                        vsn => to_binary(Vsn),
+                                                        master_pid => to_binary(AppMasterPid)
+                                                    }
+                                                }
+                                        end,
+                                        #{},
+                                    NodeData),
+                                {jsx:encode(Output), 200}
+                        end
                     end,
                 case simple_cache:get(information_query_cache,
                     CacheFlushInterval, running_apps, OutputFun) of
-                        {error, notfound} ->
-                            OutputFun();
+                        ServiceUARes ->
+                            simple_cache:flush(pps_client_interface_cache, running_apps),
+                            ServiceUARes;
                         Result ->
                             Result
                 end;

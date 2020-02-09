@@ -80,14 +80,20 @@ serialize(Val) ->
             erl_syntax:abstract(Val)))).
 
 update(UpdatedComp, CompGraph) ->
+    update(UpdatedComp, CompGraph, #{}).
+
+update(UpdatedComp, CompGraph, Options) ->
     mnesia:dirty_write(
         UpdatedComp#component{
             update_time = calendar:universal_time()
-        }),
-    case lists:member(UpdatedComp#component.health,
-            get_bad_health_states()) of
-        true -> propagate_bad_health(UpdatedComp, CompGraph);
-        false -> propagate_good_health(UpdatedComp, CompGraph)
+    }),
+    %% TODO: disable propagate_health by default but make changes accordingly
+    case maps:get(propagate_health, Options, false) of
+        true ->
+            UpdateSource = maps:get(update_source, Options, undefined),
+            propagate_health(UpdatedComp#component.comp_name, CompGraph, UpdateSource);
+        false ->
+            ok
     end.
 
 patch(Comp, AttrValList, CompGraph) when is_record(Comp, component) ->
@@ -105,7 +111,12 @@ patch(Comp, AttrValList, CompGraph) when is_record(Comp, component) ->
             end,
         Comp,
         AttrValList),
-    component:update(UpdatedComp, CompGraph);
+    PropagateHealth =
+        case proplists:get_value(health, AttrValList) of
+            undefined -> false;
+            _ -> true
+        end,
+    component:update(UpdatedComp, CompGraph, #{propagate_health => PropagateHealth});
 
 patch(Name, AttrValList, CompGraph) ->
     Res = lists:map(
@@ -145,14 +156,45 @@ patch_metadata(Comp, Meta) ->
     UpdatedComp = Comp#component{metadata = UpdatedMetaData},
     mnesia:dirty_write(UpdatedComp).
 
+propagate_health(CompName, CompGraph, UpdateSource) ->
+    [Comp] = mnesia:dirty_read(component, CompName), 
+    CurrentHealth = Comp#component.health,
+    case CurrentHealth of
+        good ->
+            propagate_good_health(Comp, CompGraph);
+        bad ->
+            %% Check if health can be converted to good
+            Siblings = digraph:out_neighbours(CompGraph, CompName),
+            case lists:all(
+                fun(Sibling) ->
+                    [SibComp] = mnesia:dirty_read(component, Sibling),
+                    SibComp#component.health =:= good orelse
+                        SibComp#component.health =:= else
+                end,
+            Siblings) of
+                true -> propagate_good_health(Comp, CompGraph);
+                false -> propagate_bad_health(Comp, CompGraph)
+            end;
+        crashed ->
+            case UpdateSource of
+                appmon ->
+                    %% Since component is back, set health to good
+                    propagate_good_health(Comp, CompGraph);
+                _ -> propagate_bad_health(Comp, CompGraph)
+            end;
+        exited ->
+            case UpdateSource of
+                appmon ->
+                    %% Since component is back, set health to good
+                    propagate_good_health(Comp, CompGraph);
+                _ -> ok
+            end
+    end.    
+
 is_updated_recently(Comp) ->
     ExitedCleanupThreshold = application:get_env(healthmon, exited_cleanup_threshold, 300),
     case get_time_difference(calendar:universal_time(), Comp#component.update_time) of
         TimeDiff when TimeDiff > ExitedCleanupThreshold ->
-            %% TODO: Also do this cleanup to central app independent
-            %% because crash logger can provide app name as undefined
-            % mnesia:dirty_delete({component, Comp#component.comp_name}),
-            % digraph:del_vertex(CompGraph, Comp#component.comp_name),
             false;
         _ -> true
     end.

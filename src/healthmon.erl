@@ -23,7 +23,9 @@
 %%  i.e. ideally crashes should keep occurring atleast every 30 secs
 %%  for system to have detectable bad health
 
-%% TODO: Include lager for better logging
+%% TODO: separate appmon related part from healthmon because a crash can destroy current graph
+
+%% TODO: Include lager for better logging in the app itself and not rely on external people
 
 -define (MAX_EXITED_PIDS, 1000).
 -define (MAX_BAD_COMPS, 1000).
@@ -114,8 +116,6 @@ handle_event(cast, {initialize}, initializing, StateData) ->
     {ok, P} = appmon_info:start_link(node(), self(), []),
     CompGraph = digraph:new([acyclic]),
     digraph:add_vertex(CompGraph, {system, universal}),
-    digraph:add_vertex(CompGraph, {node(), universal}),
-    digraph:add_edge(CompGraph, {system, universal}, {node(), universal}),
     UpdatedState =
         StateData#healthmon_state{
             appmon = P,
@@ -127,32 +127,31 @@ handle_event(cast, {initialize}, initializing, StateData) ->
             node = undefined,
             type = system
         },
-    NodeComponent =
-        #component{
-            comp_name = {node(), universal},
-            type = node
-        },
     mnesia:dirty_write(SystemComponent),
-    mnesia:dirty_write(NodeComponent),
-    appmon_info:app_ctrl(P, node(), true, []),
     {next_state, ready, UpdatedState,
-        [{state_timeout, 10000, {fetch_component_tree}},
-            {state_timeout, 5000, {run_cleanup}}]};
+        [{{timeout, refresher}, 10000, {fetch_component_tree}},
+            {{timeout, gc}, 5000, {run_cleanup}}]};
 
 handle_event(cast, {patch_component, Name, AttrValList}, ready, StateData) ->
     component:patch(Name, AttrValList, StateData#healthmon_state.comp_graph),
     keep_state_and_data;
 
-handle_event(EventType, {fetch_component_tree}, ready, StateData) when
-                EventType =:= state_timeout;
-                EventType =:= cast ->
+handle_event({timeout, refresher}, {fetch_component_tree}, ready, StateData) ->
+    CompGraph = StateData#healthmon_state.comp_graph,
+    digraph:add_vertex(CompGraph, {node(), universal}),
+    add_edge_if_not_exists(CompGraph, {system, universal}, {node(), universal}),
+    NodeComponent =
+        #component{
+            comp_name = {node(), universal},
+            type = node
+        },
+    component:update(NodeComponent, CompGraph,
+        #{update_source => appmon, propagate_health => true}),
     appmon_info:app_ctrl(StateData#healthmon_state.appmon, node(), true, []),
-    {keep_state_and_data,  [{state_timeout,
-        10000, {fetch_component_tree}}]}; %%TODO: Move this timeout to app delivery
+    {keep_state_and_data,
+        [{{timeout, refresher}, 10000, {fetch_component_tree}}]}; %%TODO: Move this timeout to app delivery
 
-handle_event(EventType, {run_cleanup}, ready, StateData) when
-                EventType =:= state_timeout;
-                EventType =:= cast ->
+handle_event({timeout, gc}, {run_cleanup}, ready, StateData) ->
     ProcessComps = mnesia:dirty_select(component,
                     [{#component{
                             type = process,
@@ -165,11 +164,11 @@ handle_event(EventType, {run_cleanup}, ready, StateData) when
                 false ->
                     mnesia:dirty_delete({component, Comp#component.comp_name}),
                     digraph:del_vertex(CompGraph, Comp#component.comp_name)
+                    %% TODO: use update api here so that health can be properly propagated
             end
         end,
     ProcessComps),
-    {keep_state_and_data,  [{state_timeout,
-        5000, {run_cleanup}}]};
+    {keep_state_and_data,  [{{timeout, gc}, 5000, {run_cleanup}}]};
 
 handle_event({call, From}, get_comp_graph, ready, StateData) ->
     {keep_state_and_data,
@@ -200,28 +199,31 @@ handle_event(info, {delivery, _, app_ctrl, _Node, NodeData}, _StateName, StateDa
     NodeData),
     {keep_state, StateData#healthmon_state{node_data = NodeData}};
 
+%% TODO: Cleanup apps as well along with processes
 handle_event(info, {delivery, _, app, AppName, AppData}, _StateName, StateData) ->
-    % io:format("A:~p, ~p", [AppName, is_atom(AppName)]),
     {Root, P2Name, Links, _XLinks0} = AppData,
     RootPid = list_to_pid(Root),
     CompGraph = StateData#healthmon_state.comp_graph,
-    case digraph:vertex(CompGraph, RootPid) of
-        false ->
-            RegName = get_registered_name(RootPid),
-            %% TODO: see if calling this again adds multiple vertices
-            digraph:add_vertex(CompGraph, RegName),
-            %% TODO: If this edge already exists then don't add again
-            add_edge_if_not_exists(CompGraph, {node(), universal}, RegName),
-            AppComponent =
+    RegName = get_registered_name(RootPid),
+    digraph:add_vertex(CompGraph, RegName),
+    add_edge_if_not_exists(CompGraph, {node(), universal}, RegName),
+    AppComponent =
+        case mnesia:dirty_read(component, RegName) of
+            [] ->
                 #component{
                     pid = RootPid,
                     comp_name = RegName,
                     app_name = AppName,
-                    type = app
-                },
-                mnesia:dirty_write(AppComponent);
-        _ -> ok
-    end,
+                    type = process
+                };
+            [ExistingComp] ->
+                ExistingComp#component{
+                    pid = RootPid,
+                    app_name = AppName
+                }
+        end,
+    component:update(AppComponent, CompGraph,
+            #{update_source => appmon, propagate_health => true}),
 
     %% P2Name contains pid to name mappings for
     %% locally registered processes
@@ -282,7 +284,8 @@ update_comp_graph(OrdDict, N2P, CompGraph, AppName) ->
                                     app_name = AppName
                                 }
                         end,
-                    component:update(Comp, CompGraph)
+                    component:update(Comp, CompGraph,
+                            #{update_source => appmon, propagate_health => true})
                     %% Instead of adding children everytime, check if pids with 
                     %% same registered name exist, if yes then update the same entry both
                     %% in table as well as graph 
@@ -552,7 +555,8 @@ propagate_good_health(Comp, CompGraph) ->
                             case lists:all(
                                 fun(Sibling) ->
                                     [SibComp] = mnesia:dirty_read(component, Sibling),
-                                    SibComp#component.health =:= good
+                                    SibComp#component.health =:= good orelse
+                                        SibComp#component.health =:= exited
                                 end,
                             Siblings) of
                                 true ->
@@ -563,7 +567,7 @@ propagate_good_health(Comp, CompGraph) ->
                 end,
                 Nbs)
     end.
-
+    
 
 get_standard_namespaces() ->
     [local, global, universal].

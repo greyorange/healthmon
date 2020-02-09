@@ -26,7 +26,6 @@
 %% @private
 %% @doc Initializes the server
 init([]) ->
-    process_flag(trap_exit, true),
     {ok, #crash_monitor_state{crash_map = #{}}}.
 
 start_link() ->
