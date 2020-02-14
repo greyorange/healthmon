@@ -50,6 +50,9 @@ get_node_data() ->
 patch_component(Name, AttrValList) ->
     gen_statem:cast({global, ?MODULE}, {patch_component, Name, AttrValList}).
 
+update_appmon(AppmonPid) ->
+    gen_statem:cast({global, ?MODULE}, {update_appmon, AppmonPid}).
+
 get_component_tree_map() ->
     {ok, CompGraph} = get_comp_graph(),
     get_component_tree_map(CompGraph).
@@ -113,12 +116,12 @@ handle_event(cast, {initialize}, initializing, StateData) ->
             simple_cache:init(information_query_cache);
         _ -> ok
     end,
-    {ok, P} = appmon_info:start_link(node(), self(), []),
     CompGraph = digraph:new([acyclic]),
     digraph:add_vertex(CompGraph, {system, universal}),
+    {ok, AppmonPid} = appmon_watcher:get_appmon_pid(),
     UpdatedState =
         StateData#healthmon_state{
-            appmon = P,
+            appmon = AppmonPid,
             comp_graph = CompGraph
         },
     SystemComponent =
@@ -135,6 +138,9 @@ handle_event(cast, {initialize}, initializing, StateData) ->
 handle_event(cast, {patch_component, Name, AttrValList}, ready, StateData) ->
     component:patch(Name, AttrValList, StateData#healthmon_state.comp_graph),
     keep_state_and_data;
+
+handle_event(cast, {update_appmon, AppmonPid}, _, StateData) ->
+    {keep_state, StateData#healthmon_state{appmon = AppmonPid}};
 
 handle_event({timeout, refresher}, {fetch_component_tree}, ready, StateData) ->
     CompGraph = StateData#healthmon_state.comp_graph,
