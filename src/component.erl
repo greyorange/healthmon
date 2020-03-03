@@ -128,7 +128,15 @@ patch(Name, AttrValList, CompGraph) ->
     BaseComp =
         case FlattenedResults of
             [] -> %% assume global namespace
-                component({Name, global});
+                case Name of
+                    Name when is_pid(Name) ->
+                        RegName = healthmon:get_registered_name(Name),
+                        case mnesia:dirty_read(?COMPONENT_MODEL, RegName) of
+                            [] -> component(RegName);
+                            Res1 -> hd(Res1)
+                        end;
+                    _ -> component({Name, global})
+                end;
             _ ->
                 hd(FlattenedResults) %% return any existing one
         end,
@@ -193,8 +201,21 @@ propagate_health(CompName, CompGraph, UpdateSource) ->
 
 is_updated_recently(Comp) ->
     ExitedCleanupThreshold = application:get_env(healthmon, exited_cleanup_threshold, 300),
+    is_updated_recently(Comp, ExitedCleanupThreshold).
+
+is_updated_recently(Comp, Threshold) ->
     case get_time_difference(calendar:universal_time(), Comp#component.update_time) of
-        TimeDiff when TimeDiff > ExitedCleanupThreshold ->
+        TimeDiff when TimeDiff > Threshold ->
             false;
         _ -> true
     end.
+
+is_name_regd({Name, _}) when is_pid(Name) -> false;
+
+is_name_regd({Name, _}) when is_list(Name) ->
+    case Name of
+        "<" ++ _ -> false;
+        _ -> true
+    end;
+
+is_name_regd(_) -> true.

@@ -27,10 +27,6 @@
 
 %% TODO: Include lager for better logging in the app itself and not rely on external people
 
--define (MAX_EXITED_PIDS, 1000).
--define (MAX_BAD_COMPS, 1000).
--define (EXITED_CLEANUP_THRESHOLD, 300). % in secs
-
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -131,9 +127,10 @@ handle_event(cast, {initialize}, initializing, StateData) ->
             type = system
         },
     mnesia:dirty_write(SystemComponent),
+    GCInterval = application:get_env(healthmon, gc_interval, 10000),
     {next_state, ready, UpdatedState,
-        [{{timeout, refresher}, 10000, {fetch_component_tree}},
-            {{timeout, gc}, 5000, {run_cleanup}}]};
+        [{{timeout, refresher}, 5000, {fetch_component_tree}},
+            {{timeout, gc}, GCInterval, {run_cleanup}}]};
 
 handle_event(cast, {patch_component, Name, AttrValList}, ready, StateData) ->
     component:patch(Name, AttrValList, StateData#healthmon_state.comp_graph),
@@ -154,9 +151,11 @@ handle_event({timeout, refresher}, {fetch_component_tree}, ready, StateData) ->
     component:update(NodeComponent, CompGraph,
         #{update_source => appmon, propagate_health => true}),
     appmon_info:app_ctrl(StateData#healthmon_state.appmon, node(), true, []),
+    AppmonRefreshInterval = application:get_env(healthmon, appmon_refresh_interval, 30000),
     {keep_state_and_data,
-        [{{timeout, refresher}, 10000, {fetch_component_tree}}]}; %%TODO: Move this timeout to app delivery
+        [{{timeout, refresher}, AppmonRefreshInterval, {fetch_component_tree}}]}; %%TODO: Move this timeout to app delivery
 
+%% TODO: This cleanup can run in a separate process
 handle_event({timeout, gc}, {run_cleanup}, ready, StateData) ->
     ProcessComps = mnesia:dirty_select(component,
                     [{#component{
@@ -165,16 +164,45 @@ handle_event({timeout, gc}, {run_cleanup}, ready, StateData) ->
     CompGraph = StateData#healthmon_state.comp_graph,
     lists:foreach(
         fun(Comp) ->
-            case component:is_updated_recently(Comp) of
+            CompName = Comp#component.comp_name,
+            CleanupThreshold =
+                case component:is_name_regd(CompName) of
+                    true -> application:get_env(healthmon, regd_cleanup_threshold, 300);
+                    false -> application:get_env(healthmon, regd_cleanup_threshold, 60)
+                end,
+            case component:is_updated_recently(Comp, CleanupThreshold) of
                 true -> ok;
                 false ->
-                    mnesia:dirty_delete({component, Comp#component.comp_name}),
+                    mnesia:dirty_delete({component, CompName}),
                     digraph:del_vertex(CompGraph, Comp#component.comp_name)
                     %% TODO: use update api here so that health can be properly propagated
+                    %% Since during refresh health propragation is already done hence not necessary
             end
         end,
     ProcessComps),
-    {keep_state_and_data,  [{{timeout, gc}, 5000, {run_cleanup}}]};
+    CrashedUnknownComps = mnesia:dirty_select(component,
+                    [{#component{
+                            type = process,
+                            app_name = undefined,
+                            health = crashed,
+                            _='_'}, [], ['$_']}]),
+    MaxUnknownCrashedProcesses = application:get_env(healthmon, max_unknown_crashed_processes, 100),
+    {_Comps, CleanupComps} =
+        case length(CrashedUnknownComps) > MaxUnknownCrashedProcesses of
+            true ->
+                SortedComps =
+                    component:sort_by_updated_time(CrashedUnknownComps),
+                lists:split(MaxUnknownCrashedProcesses, SortedComps);
+            false -> {CrashedUnknownComps, []}
+        end,
+    lists:foreach(
+        fun(Comp) ->
+            mnesia:dirty_delete({component, Comp#component.comp_name}),
+            digraph:del_vertex(CompGraph, Comp#component.comp_name)
+        end,
+        CleanupComps),
+    GCInterval = application:get_env(healthmon, gc_interval, 10000),
+    {keep_state_and_data,  [{{timeout, gc}, GCInterval, {run_cleanup}}]};
 
 handle_event({call, From}, get_comp_graph, ready, StateData) ->
     {keep_state_and_data,
@@ -344,12 +372,13 @@ update_comp_graph(OrdDict, N2P, CompGraph, AppName) ->
             fun component:is_updated_recently/1,
         CrashedComps),
         %% TODO: Merge this in above select clause
+    MaxExitedPids = application:get_env(healthmon, max_exited_pids, 1000),
     {_Comps, CleanupComps} =
-        case length(ExitedCompsRecent) > ?MAX_EXITED_PIDS of
+        case length(ExitedCompsRecent) > MaxExitedPids of
             true ->
                 SortedComps =
                     component:sort_by_updated_time(ExitedCompsRecent),
-                lists:split(?MAX_EXITED_PIDS, SortedComps);
+                lists:split(MaxExitedPids, SortedComps);
             false -> {ExitedCompsRecent, []}
         end,
     MaxCrashedComps = application:get_env(healthmon, max_crashed_comps, 5000),
@@ -395,8 +424,21 @@ get_registered_name(Pid) ->
 get_global_name(Pid) -> 
     case ets:lookup(global_pid_names, Pid) of
         [{_, Name}] -> {Name, global};
-        _ -> {Pid, undefined}
+        _ ->
+            get_gproc_name(Pid)
     end.
+
+get_gproc_name(Pid) when is_pid(Pid) ->
+    {gproc, KV} = gproc:info(Pid, {gproc,{n, '_', '_'}}),
+    case KV of
+        [] -> {Pid, global};
+        KV ->
+            {{n, _, Name}, _} = hd(KV),
+            {Name, gproc}
+    end;
+
+get_gproc_name(Pid) -> {Pid, global}.
+
 
 component(Name) ->
     #component{
@@ -576,7 +618,7 @@ propagate_good_health(Comp, CompGraph) ->
     
 
 get_standard_namespaces() ->
-    [local, global, universal].
+    [local, global, gproc, universal].
 
 get_bad_health_states() ->
     [bad, crashed, stuck, starving].
