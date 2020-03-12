@@ -234,8 +234,8 @@ handle_event(info, {delivery, _, app_ctrl, _Node, NodeData}, _StateName, StateDa
     {keep_state, StateData#healthmon_state{node_data = NodeData}};
 
 %% TODO: Cleanup apps as well along with processes
-handle_event(info, {delivery, _, app, AppName, AppData}, _StateName, StateData) ->
-    {Root, P2Name, Links, _XLinks0} = AppData,
+handle_event(info, {delivery, _, app, AppName,
+                {Root, P2Name, Links, _XLinks0}}, _StateName, StateData) when Root =/= "" ->
     RootPid = list_to_pid(Root),
     CompGraph = StateData#healthmon_state.comp_graph,
     RegName = get_registered_name(RootPid),

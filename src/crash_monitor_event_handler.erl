@@ -194,7 +194,7 @@ format_error_report(Pid, Fmt, Args) ->
             {Pid, [], [], Md, io_lib:format("Webmachine error at path ~p : ~s",
                 [Path, Formatted]), ""};
         _ ->
-            lager:error("Undefined Event in crash monitor: ~p, ~p, ~p", [Pid, Fmt, Args]),
+            lager:debug("Undefined Event in crash monitor: ~p, ~p, ~p", [Pid, Fmt, Args]),
             undefined
     end.
 
