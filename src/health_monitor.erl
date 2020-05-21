@@ -143,6 +143,7 @@ handle_info(check_starved_processes, State) ->
                             case IsStarved of
                                 false ->
                                     ets:update_element(health_monitor, Pid, [{2, {PidName, Details, Time, true}}]),
+                                    handle_starvation(Pid, Details),
                                     Acc;
                                 _ ->
                                         Acc
@@ -174,3 +175,11 @@ terminate(_Reason, _State) ->
 -spec code_change(OldVsn :: any(), State :: #{}, Extra :: any()) -> {ok, NewState :: #{}}.
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+handle_starvation(Pid, Details) ->
+    case Details of
+        #{starvation_handler := HandlerFun, process := Process} when is_function(HandlerFun, 2) ->
+            HandlerFun(Pid, Process);
+        Details ->
+            ok
+    end.
