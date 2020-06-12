@@ -193,6 +193,10 @@ format_error_report(Pid, Fmt, Args) ->
             {Md, Formatted} = format_reason_md(StackTrace),
             {Pid, [], [], Md, io_lib:format("Webmachine error at path ~p : ~s",
                 [Path, Formatted]), ""};
+        {"Error in process" ++ _} ->
+            [Pid1, Node, Reason] = Args,
+            {Md, Formatted} = format_reason_md(Reason),
+            {Pid1, [], [], Md, io_lib:format("Process at node: ~s terminating due to erlang error exit : ~s", [Node, Formatted]), ""};
         _ ->
             lager:debug("Undefined Event in crash monitor: ~p, ~p, ~p", [Pid, Fmt, Args]),
             undefined

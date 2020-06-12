@@ -35,7 +35,7 @@ enter_in_starvation(PId, Details) ->
     DateTime = erlang:timestamp(),
     case erlang:process_info(PId, registered_name) of
         undefined ->
-            lager:info(" Wrong Pid Provided ~p ",[PId]);
+            lager:debug(" Wrong Pid Provided ~p ",[PId]);
         _ ->
             Pname = case ets:lookup(global_pid_names, PId) of
                         [{PId, Name}] -> list_to_binary(logging_utils:convert_to_string(Name));
@@ -64,7 +64,7 @@ get_starved_process() ->
 %% This function is used to get details of module which enters in starving state.
 -spec get_starved_process(map()) -> list(map()).
 get_starved_process(OptionMap) ->
-    lager:info("Option map in get_starved_process ~p", [OptionMap]),
+    lager:debug("Option map in get_starved_process ~p", [OptionMap]),
     StarvedProcessList = case {maps:get(<<"process_name">>, OptionMap, none), maps:get(<<"is_starved">>, OptionMap, none)} of
                             {none, none} ->
                                 ets:match_object(health_monitor, {'_', {'_', '_', '_', '_'}});
@@ -109,7 +109,7 @@ get_starved_process(OptionMap) ->
 %% @doc Handles cast messages.
 
 handle_cast({starved_register, PId, PidName, Details, Time}, State) ->
-    lager:info("starved register event From PID ~p ProcessName ~p Details ~p Time ~p",[PId, PidName, Details, Time]),
+    lager:debug("starved register event From PID ~p ProcessName ~p Details ~p Time ~p",[PId, PidName, Details, Time]),
     % StarvedProcessTuple {process_name, Detais, starvation_from, is_starved}
     StarvedProcessTuple = {PidName, Details, Time, false},
     ets:insert(health_monitor, {PId, StarvedProcessTuple}),
@@ -119,7 +119,7 @@ handle_cast({starved_unregister, PId, ExitReason, Time}, State) ->
     lager:debug("starved exit event From PID ~p Details ~p Time ~p",[PId, ExitReason, Time]),
     case ets:lookup(health_monitor, PId) of
         [] ->
-            lager:info("Exit Starvation Event From Unknown Process ~p at ~p ~n",[PId, Time]);
+            lager:debug("Exit Starvation Event From Unknown Process ~p at ~p ~n",[PId, Time]);
         [{PId, _PidData}] ->
             % {PidName, Details, StarvedFrom, _IsStarved} = PidData,
             % StarvedTime = common_fsm_utils:round_off_float(timer:now_diff(Time, StarvedFrom)/1000000, 2),
@@ -160,7 +160,7 @@ handle_info(check_starved_processes, State) ->
 %% @private
 
 handle_call(Message, _From, State) ->
-    lager:info("Un-handled call Message: ~p", [Message]),
+    lager:debug("Un-handled call Message: ~p", [Message]),
     {reply, {error, nothandled}, State}.
 
 
