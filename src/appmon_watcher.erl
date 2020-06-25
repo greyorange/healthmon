@@ -38,7 +38,7 @@ callback_mode() ->
 %% @doc Initializes the server
 init([]) ->
     lager:debug("starting appmon_fetcher"),
-    {ok, P} = appmon_info:start_link(node(), self(), []),
+    {ok, P} = appmon_info2:start_link(node(), self(), []),
     InitState = #state{appmon = P},
     healthmon:update_appmon(P),
     {ok, ready, InitState}.

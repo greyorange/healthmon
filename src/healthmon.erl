@@ -150,7 +150,7 @@ handle_event({timeout, refresher}, {fetch_component_tree}, ready, StateData) ->
         },
     component:update(NodeComponent, CompGraph,
         #{update_source => appmon, propagate_health => true}),
-    appmon_info:app_ctrl(StateData#healthmon_state.appmon, node(), true, []),
+    appmon_info2:app_ctrl(StateData#healthmon_state.appmon, node(), true, []),
     AppmonRefreshInterval = application:get_env(healthmon, appmon_refresh_interval, 30000),
     {keep_state_and_data,
         [{{timeout, refresher}, AppmonRefreshInterval, {fetch_component_tree}}]}; %%TODO: Move this timeout to app delivery
@@ -226,7 +226,7 @@ handle_event(info, {delivery, _, app_ctrl, _Node, NodeData}, _StateName, StateDa
             case lists:member(AppName, get_ignored_apps()) of
                 true -> ok;
                 _ ->
-                    appmon_info:app(StateData#healthmon_state.appmon,
+                    appmon_info2:app(StateData#healthmon_state.appmon,
                                         AppName, true, [])
             end
         end,
