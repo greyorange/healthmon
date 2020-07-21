@@ -401,6 +401,7 @@ get_report() ->
     ets:tab2list(crash_map).
 
 notify_crashed_process(Pid, Name) when is_pid(Pid) ->
+    prometheus_counter:inc(crash_monitor_crashes_total),
     health_monitor:exit_from_starvation(Pid, crashed),
     healthmon:patch_component(Name, [{health, crashed}]).
 
