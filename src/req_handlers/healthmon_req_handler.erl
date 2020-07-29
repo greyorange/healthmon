@@ -33,7 +33,7 @@ init(Req, Opts) ->
 handle(Req, State) ->
     PathInfo = cowboy_req:path_info(Req),
     ParsedQs = cowboy_req:parse_qs(Req),
-    case ets:info(simple_cache_information_query_cache) of
+    case ets:info(information_query_cache) of
         undefined ->
             simple_cache:init(information_query_cache);
         _ -> ok
@@ -99,7 +99,7 @@ handle(Req, State) ->
                 case simple_cache:get(information_query_cache,
                     CacheFlushInterval, running_apps, OutputFun) of
                         ServiceUARes ->
-                            simple_cache:flush(pps_client_interface_cache, running_apps),
+                            simple_cache:flush(information_query_cache, running_apps),
                             ServiceUARes;
                         Result ->
                             Result
