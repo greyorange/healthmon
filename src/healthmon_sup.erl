@@ -14,9 +14,11 @@ init([]) ->
 			{permanent, 30}, 2000, worker, [healthmon]},
 	HealthMonitor  = {health_monitor, {health_monitor, start_link, []},
 		permanent, 2000, worker, [health_monitor]},
+	HealthmonInstrumenter  = {healthmon_instrumenter, {healthmon_instrumenter, start_link, []},
+		{permanent, 30}, 2000, worker, [healthmon_instrumenter]},
 	CrashMonitorSup = {crash_monitor_watcher_sup, {crash_monitor_watcher_sup, start_link, []},
 		temporary, infinity, supervisor, [crash_monitor_watcher_sup]},
-	Procs = [AppmonWatcher, HealthMon, HealthMonitor, CrashMonitorSup],
+	Procs = [AppmonWatcher, HealthMon, HealthMonitor, CrashMonitorSup, HealthmonInstrumenter],
 	{ok, {{one_for_one, 1, 5}, Procs}}.
 
 post_init([]) -> ignore.
