@@ -1,6 +1,4 @@
 PROJECT = healthmon
-PROJECT_DESCRIPTION = Erlang health monitor
-PROJECT_VERSION = 0.1.0
 
 include erlang.mk
 
