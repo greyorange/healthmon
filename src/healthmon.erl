@@ -31,6 +31,15 @@
 %%% API
 %%%===================================================================
 
+start() ->
+	healthmon_sup:start_link().
+
+start(_Type, _Args) ->
+	healthmon_sup:start_link().
+
+stop(_State) ->
+	ok.
+
 %% @doc Starts the server
 -spec start_link() -> {ok, Pid :: pid()} | ignore | {error, Error :: any()}.
 start_link() ->

@@ -1,0 +1,16 @@
+{"1.2.0",
+[{<<"goldrush">>,{pkg,<<"goldrush">>,<<"0.1.9">>},1},
+ {<<"lager">>,
+  {git,"https://github.com/erlang-lager/lager.git",
+       {ref,"69b4ada2341b8ab2cf5c8e464ac936e5e4a9f62b"}},
+  0},
+ {<<"supervisor3">>,
+  {git,"https://github.com/greyorange/supervisor3",
+       {ref,"3cfd676df7fb2b27945941292626f691341cee37"}},
+  0}]}.
+[
+{pkg_hash,[
+ {<<"goldrush">>, <<"F06E5D5F1277DA5C413E84D5A2924174182FB108DABB39D5EC548B27424CD106">>}]},
+{pkg_hash_ext,[
+ {<<"goldrush">>, <<"99CB4128CFFCB3227581E5D4D803D5413FA643F4EB96523F77D9E6937D994CEB">>}]}
+].

@@ -1,6 +1,6 @@
 {application, healthmon,
  [{description, "Erlang health monitor"},
-  {vsn, "git"},
+  {vsn, {cmd, "git describe --dirty --abbrev=7 --tags --always --first-parent"}},
   {registered, []},
   {applications,
    [kernel,
