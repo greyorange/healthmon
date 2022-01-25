@@ -1,13 +1,11 @@
 {application, healthmon,
  [{description, "Erlang health monitor"},
-  {vsn, "git"},
-  {registered, []},
+  {vsn, {cmd, "git describe --dirty --abbrev=7 --tags --always --first-parent"}},
+  {registered, [healthmon_sup]},
+  {mod, {healthmon_app, []}},
   {applications,
    [kernel,
     stdlib
    ]},
-  {env,[]},
-  {modules, []},
-
-  {maintainers, ["Hritik Soni"]}
+  {env,[]}
  ]}.
