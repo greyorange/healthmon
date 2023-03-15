@@ -8,7 +8,7 @@
     propagate_bad_health/2, propagate_good_health/2,
     get_standard_namespaces/0, component/1, add_vertex/3]).
 
--import(utils, [get_time_difference/2]).
+-import(healthmon_utils, [get_time_difference/2]).
 
 recordslist_to_json(RecordsList) ->
     jsx:encode(recordslist_to_jsonable_term(RecordsList)).
