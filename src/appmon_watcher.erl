@@ -37,7 +37,7 @@ callback_mode() ->
 %% @private
 %% @doc Initializes the server
 init([]) ->
-    lager:debug("starting appmon_fetcher"),
+    lager:debug("starting appmon_watcher"),
     {ok, P} = appmon_info2:start_link(node(), self(), []),
     InitState = #state{appmon = P},
     healthmon:update_appmon(P),

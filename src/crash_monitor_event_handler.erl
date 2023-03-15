@@ -420,7 +420,7 @@ convert_to_integer(Input) ->
     Input.
 
 convert_to_binary(Input) when Input =/= '_' ->
-    utils:to_binary(Input);
+    bsh_utils:to_binary(Input);
 convert_to_binary(Input) ->
     Input.
 
