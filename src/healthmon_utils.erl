@@ -28,7 +28,7 @@ to_list(Value) when is_pid(Value) ->
 to_list(Value) when is_list(Value) ->
     Value;
 to_list(Value) ->
-    lists:flatten(io_lib:format("~p", [Value]).
+    lists:flatten(io_lib:format("~p", [Value])).
 
 -spec get_time_difference(calendar:datetime(), calendar:datetime()) -> number().
 get_time_difference(X, Y) ->
