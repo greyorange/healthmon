@@ -38,7 +38,7 @@ enter_in_starvation(PId, Details) ->
             lager:debug(" Wrong Pid Provided ~p ",[PId]);
         _ ->
             Pname = case ets:lookup(global_pid_names, PId) of
-                        [{PId, Name}] -> list_to_binary(logging_utils:convert_to_string(Name));
+                        [{PId, Name}] -> list_to_binary(healthmon_utils:convert_to_string(Name));
                         [] -> ""
                     end,
             gen_server:cast({global, health_monitor}, {starved_register, PId, Pname, Details, DateTime})
@@ -99,9 +99,9 @@ get_starved_process(OptionMap) ->
             lists:map(fun(ProcessData) ->
                 {Pid, {PidName, Details, Time, StarvedFlag}} = ProcessData,
                 FormattedTime = iso8601:format(Time),
-                #{<<"pid">> => list_to_binary(pid_to_list(Pid)), <<"registered_name">> => logging_utils:convert_to_string(PidName),
-                <<"details">> => logging_utils:convert_to_string(Details), <<"is_starved">> => logging_utils:convert_to_string(StarvedFlag),
-                <<"starvation_from">> => logging_utils:convert_to_string(FormattedTime)}
+                #{<<"pid">> => list_to_binary(pid_to_list(Pid)), <<"registered_name">> => healthmon_utils:convert_to_string(PidName),
+                <<"details">> => healthmon_utils:convert_to_string(Details), <<"is_starved">> => healthmon_utils:convert_to_string(StarvedFlag),
+                <<"starvation_from">> => healthmon_utils:convert_to_string(FormattedTime)}
             end, StarvedProcessList)
     end.
 

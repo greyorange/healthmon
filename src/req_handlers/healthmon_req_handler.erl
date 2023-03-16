@@ -12,7 +12,7 @@
          terminate/3
         ]).
 
--import(utils, [to_binary/1]).
+-import(healthmon_utils, [to_binary/1]).
 
 -include("../include/healthmon.hrl").
 

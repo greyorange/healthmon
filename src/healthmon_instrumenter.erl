@@ -12,7 +12,7 @@
 
 -include("include/healthmon.hrl").
 
--import(utils, [to_list/1]).
+-import(healthmon_utils, [to_list/1]).
 
 %% @doc Starts the server
 -spec start_link() -> {ok, Pid :: pid()} | ignore | {error, Error :: any()}.

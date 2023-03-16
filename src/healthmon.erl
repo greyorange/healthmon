@@ -12,8 +12,6 @@
 
 -include("include/healthmon.hrl").
 
--import(utils, [get_time_difference/2]).
-
 %% TODO: Right now healthmon supports only one node
 %% But can be easily extended to support multiple nodes
 %% Use appmon pid to find node names properly using a map
